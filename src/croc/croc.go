@@ -196,9 +196,7 @@ func New(ops Options) (c *Client, err error) {
 		return
 	}
 	// Create a hash of part of the shared secret to use as the room name
-	// add the current day and "croc" to the shared secret to make more resistant
-	// to rainbow tables
-	hashExtra := "croc" + time.Now().Format("2006-01-02")
+	hashExtra := "croc"
 	roomNameBytes := sha256.Sum256([]byte(c.Options.SharedSecret[:4] + hashExtra))
 	c.Options.RoomName = hex.EncodeToString(roomNameBytes[:])
 
@@ -508,7 +506,7 @@ func (c *Client) sendCollectFiles(filesInfo []FileInfo) (err error) {
 			c.Options.HashAlgorithm = "xxhash"
 		}
 
-		c.FilesToTransfer[i].Hash, err = utils.HashFile(fullPath, c.Options.HashAlgorithm)
+		c.FilesToTransfer[i].Hash, err = utils.HashFile(fullPath, c.Options.HashAlgorithm, fileInfo.Size > 1e7)
 		log.Debugf("hashed %s to %x using %s", fullPath, c.FilesToTransfer[i].Hash, c.Options.HashAlgorithm)
 		totalFilesSize += fileInfo.Size
 		if err != nil {
@@ -1066,7 +1064,7 @@ func (c *Client) Receive() (err error) {
 	err = c.transfer()
 	if err == nil {
 		if c.numberOfTransferredFiles+len(c.EmptyFoldersToTransfer) == 0 {
-			fmt.Fprintf(os.Stderr, "\rNo files transferred.")
+			fmt.Fprintf(os.Stderr, "\rNo files transferred.\n")
 		}
 	}
 	return
@@ -1211,10 +1209,10 @@ func (c *Client) processMessageFileInfo(m message.Message) (done bool, err error
 		if strings.Contains(c.FilesToTransfer[i].FolderRemote, ".ssh") {
 			return true, fmt.Errorf("invalid path detected: '%s'", fi.FolderRemote)
 		}
-		// Issue #595 - disallow filenames with anything but 0-9a-zA-Z.-_. and / characters
-
-		if !utils.ValidFileName(path.Join(c.FilesToTransfer[i].FolderRemote, fi.Name)) {
-			return true, fmt.Errorf("invalid filename detected: '%s'", fi.Name)
+		// Issue #595 - disallow filenames with invisible characters
+		errFileName := utils.ValidFileName(path.Join(c.FilesToTransfer[i].FolderRemote, fi.Name))
+		if errFileName != nil {
+			return true, errFileName
 		}
 	}
 	c.TotalNumberOfContents = 0
@@ -1641,6 +1639,7 @@ func (c *Client) recipientGetFileReady(finished bool) (err error) {
 		}
 		c.SuccessfulTransfer = true
 		c.FilesHasFinished[c.FilesToTransferCurrentNum] = struct{}{}
+		return
 	}
 
 	err = c.recipientInitializeFile()
@@ -1777,13 +1776,13 @@ func (c *Client) updateIfRecipientHasFileInfo() (err error) {
 				percentDone := 100 - float64(len(missingChunks)*models.TCP_BUFFER_SIZE/2)/float64(fileInfo.Size)*100
 
 				log.Debug("asking to overwrite")
-				prompt := fmt.Sprintf("\nOverwrite '%s'? (y/N) ", path.Join(fileInfo.FolderRemote, fileInfo.Name))
+				prompt := fmt.Sprintf("\nOverwrite '%s'? (y/N) (use --overwrite to omit) ", path.Join(fileInfo.FolderRemote, fileInfo.Name))
 				if percentDone < 99 {
-					prompt = fmt.Sprintf("\nResume '%s' (%2.1f%%)? (y/N) ", path.Join(fileInfo.FolderRemote, fileInfo.Name), percentDone)
+					prompt = fmt.Sprintf("\nResume '%s' (%2.1f%%)? (y/N)   (use --overwrite to omit) ", path.Join(fileInfo.FolderRemote, fileInfo.Name), percentDone)
 				}
 				choice := strings.ToLower(utils.GetInput(prompt))
 				if choice != "y" && choice != "yes" {
-					fmt.Fprintf(os.Stderr, "skipping '%s'", path.Join(fileInfo.FolderRemote, fileInfo.Name))
+					fmt.Fprintf(os.Stderr, "Skipping '%s'\n", path.Join(fileInfo.FolderRemote, fileInfo.Name))
 					continue
 				}
 			}
